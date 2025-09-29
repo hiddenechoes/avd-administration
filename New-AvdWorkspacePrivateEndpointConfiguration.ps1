@@ -56,6 +56,7 @@ $requiredModules = @(
     'Az.DesktopVirtualization'
 )
 
+# Import required Az modules into the runspace if they are not already loaded.
 foreach ($module in $requiredModules) {
     if (-not (Get-Module -Name $module)) {
         Write-Verbose ("Importing module {0}" -f $module)
@@ -88,7 +89,7 @@ function Write-Step {
     }
 }
 
-# Retrieves the private endpoint and waits for DNS configuration details when requested.
+# Retrieves the private endpoint and waits up to $dnsConfigTimeoutSeconds seconds for Azure to expose CustomDnsConfigs so records can be written reliably.
 function Get-PrivateEndpointWithDnsConfig {
     param(
         [ValidateNotNullOrEmpty()][string]$ResourceGroupName,
@@ -96,19 +97,23 @@ function Get-PrivateEndpointWithDnsConfig {
         [int]$TimeoutSeconds = $dnsConfigTimeoutSeconds
     )
 
+    # Establish an absolute deadline for retrieving populated CustomDnsConfigs.
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
+        # Pull the latest private endpoint view, suppressing errors if it temporarily disappears.
         $privateEndpoint = Get-AzPrivateEndpoint -Name $Name -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
         if ($privateEndpoint -and $privateEndpoint.CustomDnsConfigs -and $privateEndpoint.CustomDnsConfigs.Count -gt 0) {
+            # Exit once Azure supplies the DNS configuration payload we need.
             return $privateEndpoint
         }
+        # Give Azure time to finish populating metadata before the next poll.
         Start-Sleep -Seconds $dnsConfigPollSeconds
     } while ((Get-Date) -lt $deadline)
 
     return $privateEndpoint
 }
 
-# Ensures the target subnet allows private endpoint attachments.
+# Ensures the target subnet allows private endpoint attachments by disabling network policies when required.
 function Set-PrivateEndpointSubnetPolicy {
     param(
         [Microsoft.Azure.Commands.Network.Models.PSVirtualNetwork]$VirtualNetwork,
@@ -116,26 +121,31 @@ function Set-PrivateEndpointSubnetPolicy {
         [string]$ResourceGroupName
     )
 
+    # Attempt to pull the target subnet from the provided virtual network object.
     $subnet = $VirtualNetwork | Get-AzVirtualNetworkSubnetConfig -Name $SubnetName
     if (-not $subnet) {
         throw "Subnet '$SubnetName' not found in virtual network '$($VirtualNetwork.Name)'."
     }
 
     if ($subnet.PrivateEndpointNetworkPolicies -ne "Disabled") {
+        # Flip the network policy so private endpoints can be attached to this subnet.
         $subnet.PrivateEndpointNetworkPolicies = "Disabled"
+        # Persist the updated subnet configuration back to Azure.
         $VirtualNetwork | Set-AzVirtualNetwork | Out-Null
         $effectiveResourceGroup = if ($ResourceGroupName) { $ResourceGroupName } else { $VirtualNetwork.ResourceGroupName }
         if (-not $effectiveResourceGroup) {
             throw "Unable to resolve the virtual network resource group. Provide VirtualNetworkResourceGroupName."
         }
+        # Refresh the virtual network to pick up the latest subnet state.
         $VirtualNetwork = Get-AzVirtualNetwork -Name $VirtualNetwork.Name -ResourceGroupName $effectiveResourceGroup
-        $subnet = $VirtualNetwork | Get-AzVirtualNetworkSubnetConfig -Name $SubnetName
+        # Attempt to pull the target subnet from the provided virtual network object.
+    $subnet = $VirtualNetwork | Get-AzVirtualNetworkSubnetConfig -Name $SubnetName
     }
 
     return $subnet
 }
 
-# Creates the private endpoint if it does not already exist.
+# Creates the workspace private endpoint only when one does not already exist.
 function New-WorkspacePrivateEndpoint {
     param(
         [ValidateNotNullOrEmpty()][string]$ResourceGroupName,
@@ -146,6 +156,7 @@ function New-WorkspacePrivateEndpoint {
         [string[]]$GroupIds = @('feed')
     )
 
+    # Check for an existing private endpoint so the command remains idempotent.
     $existing = Get-AzPrivateEndpoint -Name $Name -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
     if ($existing) {
         return $existing
@@ -155,6 +166,7 @@ function New-WorkspacePrivateEndpoint {
         $GroupIds = @('feed')
     }
 
+    # Build the connection payload that binds the endpoint to the workspace feed.
     $connectionParams = @{
         Name                 = "$Name-connection"
         PrivateLinkServiceId = $TargetResourceId
@@ -171,6 +183,7 @@ function New-WorkspacePrivateEndpoint {
         throw 'The current Az.Network module does not support specifying target subresources for private endpoints (GroupId/GroupIds).'
     }
 
+    # Create the private link service connection that the endpoint needs.
     $connection = New-AzPrivateLinkServiceConnection @connectionParams
     if (-not $connection) {
         throw 'Failed to create private link service connection for the workspace.'
@@ -186,6 +199,7 @@ function Get-PrivateDnsZoneResource {
         [string]$ZoneName
     )
 
+    # Attempt to reuse the existing private DNS zone before creating one.
     $zone = Get-AzPrivateDnsZone -Name $ZoneName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
     if (-not $zone) {
         $zone = New-AzPrivateDnsZone -Name $ZoneName -ResourceGroupName $ResourceGroupName
@@ -195,6 +209,7 @@ function Get-PrivateDnsZoneResource {
 }
 
 # Ensures the private endpoint is associated with the DNS zone group.
+# Associates the private endpoint with the private DNS zone group if it is not already linked.
 function Set-PrivateDnsZoneGroup {
     param(
         [Microsoft.Azure.Commands.Network.Models.PSPrivateEndpoint]$PrivateEndpoint,
@@ -203,6 +218,7 @@ function Set-PrivateDnsZoneGroup {
         [string]$PrivateEndpointResourceGroupName
     )
 
+    # Without a hydrated private endpoint object we cannot project DNS records.
     if (-not $PrivateEndpoint) {
         throw 'A provisioning private endpoint instance is required to configure the DNS zone group.'
     }
@@ -211,6 +227,7 @@ function Set-PrivateDnsZoneGroup {
         throw 'A private DNS zone is required to configure the DNS zone group.'
     }
 
+    # Look for an existing zone group binding on the private endpoint.
     $zoneGroup = Get-AzPrivateDnsZoneGroup -ResourceGroupName $PrivateEndpointResourceGroupName -PrivateEndpointName $PrivateEndpoint.Name -Name $ZoneGroupName -ErrorAction SilentlyContinue
     if ($zoneGroup) {
         return $zoneGroup
@@ -224,17 +241,19 @@ function Set-PrivateDnsZoneGroup {
         throw 'The private DNS zone object does not contain an Id or ResourceId.'
     }
 
+    # Prepare the zone configuration object required by the zone group command.
     $zoneConfig = New-AzPrivateDnsZoneConfig -Name "default" -PrivateDnsZoneId $zoneId
     New-AzPrivateDnsZoneGroup -ResourceGroupName $PrivateEndpointResourceGroupName -PrivateEndpointName $PrivateEndpoint.Name -Name $ZoneGroupName -PrivateDnsZoneConfig $zoneConfig
 }
 
-# Synchronizes DNS records from the private endpoint configuration.
+# Projects CustomDnsConfigs into A records in the private DNS zone.
 function Update-PrivateDnsRecords {
     param(
         [Microsoft.Azure.Commands.Network.Models.PSPrivateEndpoint]$PrivateEndpoint,
         [Microsoft.Azure.Commands.PrivateDns.Models.PSPrivateDnsZone]$Zone
     )
 
+    # Without a hydrated private endpoint object we cannot project DNS records.
     if (-not $PrivateEndpoint) {
         throw 'A private endpoint instance is required to synchronize DNS records.'
     }
@@ -247,11 +266,13 @@ function Update-PrivateDnsRecords {
         return
     }
 
+    # Iterate through each DNS configuration returned on the private endpoint.
     foreach ($dnsConfig in $PrivateEndpoint.CustomDnsConfigs) {
         if (-not $dnsConfig.Fqdn) {
             continue
         }
 
+        # Build the fully-qualified record set name from the endpoint FQDN.
         $recordSetName = $dnsConfig.Fqdn.TrimEnd('.')
         if (-not $recordSetName.EndsWith($Zone.Name, [System.StringComparison]::OrdinalIgnoreCase)) {
             continue
@@ -262,10 +283,13 @@ function Update-PrivateDnsRecords {
             $relativeName = "@"
         }
 
+        # Reuse an existing A record where possible to avoid duplicates.
         $existingRecordSet = Get-AzPrivateDnsRecordSet -ZoneName $Zone.Name -ResourceGroupName $Zone.ResourceGroupName -Name $relativeName -RecordType A -ErrorAction SilentlyContinue
         if ($existingRecordSet) {
+            # Reset previously stored IPs so the record reflects current assignments.
             $existingRecordSet.Records.Clear()
             foreach ($ip in $dnsConfig.IPAddresses) {
+                # Append each private endpoint IP address to the record set.
                 $existingRecordSet | Add-AzPrivateDnsRecordConfig -Ipv4Address $ip | Out-Null
             }
             $existingRecordSet | Set-AzPrivateDnsRecordSet | Out-Null
@@ -274,18 +298,20 @@ function Update-PrivateDnsRecords {
             $records = foreach ($ip in $dnsConfig.IPAddresses) {
                 New-AzPrivateDnsRecordConfig -Ipv4Address $ip
             }
+            # Create a brand new A record with all private endpoint IP addresses.
             New-AzPrivateDnsRecordSet -ZoneName $Zone.Name -ResourceGroupName $Zone.ResourceGroupName -Name $relativeName -RecordType A -Ttl 300 -PrivateDnsRecords $records | Out-Null
         }
     }
 }
 
-# Disables public access on the workspace, using REST as a fallback when necessary.
+# Disables public access on the workspace, falling back to REST if the cmdlet lacks support.
 function Disable-PublicNetworkAccess {
     param(
         [string]$WorkspaceResourceGroup,
         [string]$WorkspaceName
     )
 
+    # Pull the current workspace state so we know whether updates are needed.
     $workspace = Get-AzWvdWorkspace -ResourceGroupName $WorkspaceResourceGroup -Name $WorkspaceName
     if (-not $workspace) {
         throw "Workspace '$WorkspaceName' not found in resource group '$WorkspaceResourceGroup'."
@@ -296,6 +322,7 @@ function Disable-PublicNetworkAccess {
     }
 
     try {
+        # Prefer the native cmdlet when it supports toggling public network access.
         Update-AzWvdWorkspace -ResourceGroupName $WorkspaceResourceGroup -Name $WorkspaceName -PublicNetworkAccess Disabled | Out-Null
         return Get-AzWvdWorkspace -ResourceGroupName $WorkspaceResourceGroup -Name $WorkspaceName
     }
@@ -304,20 +331,23 @@ function Disable-PublicNetworkAccess {
         $apiVersion = "2023-09-05-preview"
         $workspaceId = $workspace.Id.Trim()
         $body = @{ properties = @{ publicNetworkAccess = "Disabled" } } | ConvertTo-Json -Depth 5
+        # Fall back to the REST API because some module versions lack the parameter.
         Invoke-AzRestMethod -Path "$workspaceId?api-version=$apiVersion" -Method PUT -Payload $body | Out-Null
         return Get-AzWvdWorkspace -ResourceGroupName $WorkspaceResourceGroup -Name $WorkspaceName
     }
 }
 
-# Checks private DNS resolution for each expected endpoint FQDN.
+# Validates that private DNS records resolve to the expected IPs.
 function Test-PrivateEndpointDns {
     param(
         [Microsoft.Azure.Commands.Network.Models.PSPrivateEndpoint]$PrivateEndpoint
     )
 
+    # Collect each DNS validation result into a list for reporting.
     $results = @()
     $resolveDnsAvailable = Get-Command -Name Resolve-DnsName -ErrorAction SilentlyContinue
 
+    # Iterate through each DNS configuration returned on the private endpoint.
     foreach ($dnsConfig in $PrivateEndpoint.CustomDnsConfigs) {
         if (-not $dnsConfig.Fqdn) {
             continue
@@ -355,14 +385,16 @@ function Test-PrivateEndpointDns {
     return $results
 }
 
-# Attempts TCP 443 connectivity to each endpoint, falling back gracefully when tooling is absent.
+# Uses Test-NetConnection when available to confirm the private endpoint answers on TCP 443.
 function Test-PrivateEndpointConnectivity {
     param(
         [Microsoft.Azure.Commands.Network.Models.PSPrivateEndpoint]$PrivateEndpoint
     )
 
+    # Collate TCP connectivity test results for workbook output.
     $tests = @()
     $testNetConnectionAvailable = Get-Command -Name Test-NetConnection -ErrorAction SilentlyContinue
+    # Iterate through each DNS configuration returned on the private endpoint.
     foreach ($dnsConfig in $PrivateEndpoint.CustomDnsConfigs) {
         if (-not $dnsConfig.Fqdn) {
             continue
@@ -450,7 +482,8 @@ if ($existingPrivateEndpoint) {
 }
 
 if ($DryRun -eq $true) {
-    $plan = [System.Collections.Generic.List[object]]::new()
+        # Build a workbook-friendly preview when -DryRun is supplied.
+$plan = [System.Collections.Generic.List[object]]::new()
 
     $subnetPolicyStatus = if ($initialSubnet.PrivateEndpointNetworkPolicies -eq 'Disabled') { 'NoChange' } else { 'WillDisable' }
     $subnetPolicyMessage = if ($subnetPolicyStatus -eq 'NoChange') {
@@ -495,6 +528,7 @@ if ($DryRun -eq $true) {
 
 
 
+# Apply subnet policy changes and provision the private endpoint as needed.
 $targetSubnet = Set-PrivateEndpointSubnetPolicy -VirtualNetwork $virtualNetwork -SubnetName $SubnetName -ResourceGroupName $VirtualNetworkResourceGroupName
 
 # Determine the correct private endpoint subresource (feed) for the workspace resource type.
@@ -515,6 +549,7 @@ $privateEndpoint = Get-AzPrivateEndpoint -Name $PrivateEndpointName -ResourceGro
 $dnsZone = Get-PrivateDnsZoneResource -ResourceGroupName $PrivateDnsZoneResourceGroupName -ZoneName $PrivateDnsZoneName
 Set-PrivateDnsZoneGroup -PrivateEndpoint $privateEndpoint -Zone $dnsZone -ZoneGroupName $PrivateDnsZoneGroupName -PrivateEndpointResourceGroupName $WorkspaceResourceGroupName | Out-Null
 
+# Wait for Azure to expose CustomDnsConfigs before writing DNS records.
 $privateEndpoint = Get-PrivateEndpointWithDnsConfig -ResourceGroupName $WorkspaceResourceGroupName -Name $PrivateEndpointName -TimeoutSeconds $dnsConfigTimeoutSeconds
 if (-not ($privateEndpoint -and $privateEndpoint.CustomDnsConfigs -and $privateEndpoint.CustomDnsConfigs.Count -gt 0)) {
     Write-Warning "Private endpoint DNS configuration did not populate within $dnsConfigTimeoutSeconds seconds. DNS records will not be synced automatically."
@@ -523,6 +558,7 @@ else {
     Update-PrivateDnsRecords -PrivateEndpoint $privateEndpoint -Zone $dnsZone
 }
 
+# Harden the workspace so it only responds through the private endpoint.
 $workspace = Disable-PublicNetworkAccess -WorkspaceResourceGroup $WorkspaceResourceGroupName -WorkspaceName $WorkspaceName
 
 $connectionState = $privateEndpoint.PrivateLinkServiceConnections | Select-Object -First 1
