@@ -11,9 +11,6 @@
 .PARAMETER WorkspaceName
  Name of the Azure Virtual Desktop workspace.
 
-.PARAMETER PrivateEndpointName
- Name to assign to the private endpoint created for the workspace.
-
 .PARAMETER Location
  Azure region (for example, eastus) where the resources reside.
 
@@ -39,7 +36,7 @@
  When set to true, shows the planned operations without making changes.
 
 .EXAMPLE
- .\New-AvdWorkspacePrivateEndpointConfiguration.ps1 -WorkspaceResourceGroupName rg-avd -WorkspaceName avd-ws -PrivateEndpointName avd-ws-pe -Location eastus -VirtualNetworkResourceGroupName rg-network -VirtualNetworkName avd-vnet -SubnetName avd-pe-subnet -PrivateDnsZoneResourceGroupName rg-dns -PrivateDnsZoneName privatelink.wvd.microsoft.com
+ .\New-AvdWorkspacePrivateEndpointConfiguration.ps1 -WorkspaceResourceGroupName rg-avd -WorkspaceName avd-ws -Location eastus -VirtualNetworkResourceGroupName rg-network -VirtualNetworkName avd-vnet -SubnetName avd-pe-subnet -PrivateDnsZoneResourceGroupName rg-dns -PrivateDnsZoneName privatelink.wvd.microsoft.com
 
 .NOTES
  Requires Azure PowerShell Az modules with permissions to manage virtual networks, private endpoints, private DNS, and Azure Virtual Desktop workspaces.
@@ -52,9 +49,6 @@ param(
 
     [Parameter(Mandatory = $true, HelpMessage = 'Name of the Azure Virtual Desktop workspace.')]
     [ValidateNotNullOrEmpty()][string]$WorkspaceName,
-
-    [Parameter(Mandatory = $true, HelpMessage = 'Name to assign to the workspace private endpoint.')]
-    [ValidateNotNullOrEmpty()][string]$PrivateEndpointName,
 
     [Parameter(Mandatory = $true, HelpMessage = 'Azure region where the resources reside (example: eastus).')]
     [ValidateNotNullOrEmpty()][string]$Location,
@@ -80,6 +74,9 @@ param(
     [Parameter(HelpMessage = 'Set to $true to preview actions without applying changes.')]
     [bool]$DryRun = $false
 )
+
+# Derive the private endpoint name from the workspace name.
+$PrivateEndpointName = "pe-$WorkspaceName"
 
 # Ensure required Az modules are loaded before execution.
 $requiredModules = @(
