@@ -6,6 +6,7 @@
  The automation runbook resolves the target subscription automatically based on the workspace resource group.
  The workspace private endpoint is deployed into the same resource group as the workspace.
  Specify -DryRun:$true to preview planned operations without making changes.
+ Adjust -DnsRecordWaitSeconds to control how long the script waits for private endpoint DNS data to become available.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -44,7 +45,10 @@ param(
     [bool]$SkipDnsValidation = $false,
 
     [Parameter()]
-    [bool]$DryRun = $false
+    [bool]$DryRun = $false,
+
+    [Parameter()]
+    [ValidateRange(5,600)][int]$DnsRecordWaitSeconds = 90
 )
 
 # Ensure required Az modules are loaded before execution.
@@ -94,6 +98,8 @@ function Set-PrivateEndpointSubnetPolicy {
     if (-not $subnet) {
         throw "Subnet '$SubnetName' not found in virtual network '$($VirtualNetwork.Name)'."
     }
+
+    $plan.Add((Write-Step -Step 'DnsRecords' -Status 'ManualSync' -Message "Script will poll up to $DnsRecordWaitSeconds seconds for private endpoint DNS data before syncing records."))
 
     if ($subnet.PrivateEndpointNetworkPolicies -ne "Disabled") {
         $subnet.PrivateEndpointNetworkPolicies = "Disabled"
@@ -448,6 +454,8 @@ if ($DryRun -eq $true) {
         $plan.Add((Write-Step -Step 'DnsZoneGroup' -Status 'Create' -Message "Would associate private endpoint with DNS zone group '$PrivateDnsZoneGroupName'."))
     }
 
+    $plan.Add((Write-Step -Step 'DnsRecords' -Status 'ManualSync' -Message "Script will poll up to $DnsRecordWaitSeconds seconds for private endpoint DNS data before syncing records."))
+
     $publicAccessStatus = if ($workspaceCurrent.PublicNetworkAccess -eq 'Disabled') { 'Disabled' } else { 'WillDisable' }
     $publicAccessMessage = if ($publicAccessStatus -eq 'Disabled') {
         'Workspace public network access already disabled.'
@@ -478,7 +486,23 @@ $privateEndpoint = Get-AzPrivateEndpoint -Name $PrivateEndpoint.Name -ResourceGr
 
 $dnsZone = Get-PrivateDnsZoneResource -ResourceGroupName $PrivateDnsZoneResourceGroupName -ZoneName $PrivateDnsZoneName
 Set-PrivateDnsZoneGroup -PrivateEndpoint $privateEndpoint -Zone $dnsZone -ZoneGroupName $PrivateDnsZoneGroupName -PrivateEndpointResourceGroupName $WorkspaceResourceGroupName | Out-Null
-Update-PrivateDnsRecords -PrivateEndpoint $privateEndpoint -Zone $dnsZone
+
+# Refresh the private endpoint until DNS configuration data becomes available so records can be registered manually.
+$waitDeadline = [DateTimeOffset]::UtcNow.AddSeconds($DnsRecordWaitSeconds)
+while ([DateTimeOffset]::UtcNow -lt $waitDeadline) {
+    $privateEndpoint = Get-AzPrivateEndpoint -Name $PrivateEndpointName -ResourceGroupName $WorkspaceResourceGroupName
+    if ($privateEndpoint.CustomDnsConfigs -and $privateEndpoint.CustomDnsConfigs.Count -gt 0) {
+        break
+    }
+    Start-Sleep -Seconds 5
+}
+
+if (-not ($privateEndpoint.CustomDnsConfigs -and $privateEndpoint.CustomDnsConfigs.Count -gt 0)) {
+    Write-Warning "Private endpoint DNS configuration did not populate within $DnsRecordWaitSeconds seconds. DNS records will not be synced automatically."
+}
+else {
+    Update-PrivateDnsRecords -PrivateEndpoint $privateEndpoint -Zone $dnsZone
+}
 
 $workspace = Disable-PublicNetworkAccess -WorkspaceResourceGroup $WorkspaceResourceGroupName -WorkspaceName $WorkspaceName
 
