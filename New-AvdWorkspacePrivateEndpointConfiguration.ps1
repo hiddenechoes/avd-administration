@@ -39,7 +39,7 @@ param(
     [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneName,
 
     [Parameter()]
-    [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneGroupName = "avd-zonegroup",
+    [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneGroupName = "default",
 
     [Parameter()]
     [bool]$SkipDnsValidation = $false,
