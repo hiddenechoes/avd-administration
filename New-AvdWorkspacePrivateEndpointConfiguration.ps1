@@ -38,9 +38,6 @@ param(
     [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneName,
 
     [Parameter()]
-    [string]$PrivateDnsZoneVirtualNetworkLinkName = "avd-dnslink",
-
-    [Parameter()]
     [string]$PrivateDnsZoneGroupName = "avd-zonegroup",
 
     [Parameter()]
@@ -166,22 +163,6 @@ function Get-PrivateDnsZoneResource {
     }
 
     return $zone
-}
-
-# Links the virtual network to the private DNS zone with auto-registration.
-function Set-PrivateDnsZoneLink {
-    param(
-        [Microsoft.Azure.Commands.PrivateDns.Models.PSPrivateDnsZone]$Zone,
-        [string]$LinkName,
-        [Microsoft.Azure.Commands.Network.Models.PSVirtualNetwork]$VirtualNetwork
-    )
-
-    $link = Get-AzPrivateDnsVirtualNetworkLink -ResourceGroupName $Zone.ResourceGroupName -ZoneName $Zone.Name -Name $LinkName -ErrorAction SilentlyContinue
-    if (-not $link) {
-        $link = New-AzPrivateDnsVirtualNetworkLink -ResourceGroupName $Zone.ResourceGroupName -ZoneName $Zone.Name -Name $LinkName -VirtualNetworkId $VirtualNetwork.Id -EnableRegistration
-    }
-
-    return $link
 }
 
 # Ensures the private endpoint is associated with the DNS zone group.
@@ -426,10 +407,6 @@ if (-not $initialSubnet) {
 
 $existingPrivateEndpoint = Get-AzPrivateEndpoint -Name $PrivateEndpointName -ResourceGroupName $WorkspaceResourceGroupName -ErrorAction SilentlyContinue
 $existingDnsZone = Get-AzPrivateDnsZone -Name $PrivateDnsZoneName -ResourceGroupName $PrivateDnsZoneResourceGroupName -ErrorAction SilentlyContinue
-$existingDnsLink = $null
-if ($existingDnsZone) {
-    $existingDnsLink = Get-AzPrivateDnsVirtualNetworkLink -ResourceGroupName $existingDnsZone.ResourceGroupName -ZoneName $existingDnsZone.Name -Name $PrivateDnsZoneVirtualNetworkLinkName -ErrorAction SilentlyContinue
-}
 $existingZoneGroup = $null
 if ($existingPrivateEndpoint) {
     $existingZoneGroup = Get-AzPrivateDnsZoneGroup -ResourceGroupName $WorkspaceResourceGroupName -PrivateEndpointName $PrivateEndpointName -Name $PrivateDnsZoneGroupName -ErrorAction SilentlyContinue
@@ -456,12 +433,6 @@ if ($DryRun) {
         $plan.Add((Write-Step -Step 'PrivateDnsZone' -Status 'Existing' -Message "Private DNS zone '$PrivateDnsZoneName' already present."))
     } else {
         $plan.Add((Write-Step -Step 'PrivateDnsZone' -Status 'Create' -Message "Would create private DNS zone '$PrivateDnsZoneName'."))
-    }
-
-    if ($existingDnsLink) {
-        $plan.Add((Write-Step -Step 'DnsLink' -Status 'Existing' -Message "Virtual network '$VirtualNetworkName' already linked to private DNS zone."))
-    } else {
-        $plan.Add((Write-Step -Step 'DnsLink' -Status 'Create' -Message "Would link virtual network '$VirtualNetworkName' to private DNS zone with auto-registration."))
     }
 
     if ($existingZoneGroup) {
@@ -499,7 +470,6 @@ $privateEndpoint = New-WorkspacePrivateEndpoint -ResourceGroupName $WorkspaceRes
 $privateEndpoint = Get-AzPrivateEndpoint -Name $PrivateEndpoint.Name -ResourceGroupName $WorkspaceResourceGroupName
 
 $dnsZone = Get-PrivateDnsZoneResource -ResourceGroupName $PrivateDnsZoneResourceGroupName -ZoneName $PrivateDnsZoneName
-Set-PrivateDnsZoneLink -Zone $dnsZone -LinkName $PrivateDnsZoneVirtualNetworkLinkName -VirtualNetwork $virtualNetwork | Out-Null
 Set-PrivateDnsZoneGroup -PrivateEndpoint $privateEndpoint -Zone $dnsZone -ZoneGroupName $PrivateDnsZoneGroupName -PrivateEndpointResourceGroupName $WorkspaceResourceGroupName | Out-Null
 Update-PrivateDnsRecords -PrivateEndpoint $privateEndpoint -Zone $dnsZone
 
