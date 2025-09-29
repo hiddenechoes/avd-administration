@@ -12,7 +12,7 @@
  Name of the Azure Virtual Desktop workspace.
 
 .PARAMETER Location
- Azure region (for example, eastus) where the resources reside.
+ Azure region (U.S. only) where the resources reside. Defaults to westus2.
 
 .PARAMETER VirtualNetworkResourceGroupName
  Resource group that contains the virtual network hosting the private endpoint subnet.
@@ -26,11 +26,14 @@
 .PARAMETER PrivateDnsZoneResourceGroupName
  Resource group containing the Azure Private DNS zone for AVD.
 
+.PARAMETER PrivateDnsZoneSubscriptionId
+ Subscription ID that hosts the Azure Private DNS zone.
+
 .PARAMETER DryRun
  When set to true, shows the planned operations without making changes.
 
 .EXAMPLE
- .\New-AvdWorkspacePrivateEndpointConfiguration.ps1 -WorkspaceResourceGroupName rg-avd -WorkspaceName avd-ws -Location eastus -VirtualNetworkResourceGroupName rg-network -VirtualNetworkName avd-vnet -SubnetName avd-pe-subnet -PrivateDnsZoneResourceGroupName rg-dns -PrivateDnsZoneName privatelink.wvd.microsoft.com
+ .\New-AvdWorkspacePrivateEndpointConfiguration.ps1 -WorkspaceResourceGroupName rg-avd -WorkspaceName avd-ws -Location eastus -VirtualNetworkResourceGroupName rg-network -VirtualNetworkName avd-vnet -SubnetName avd-pe-subnet -PrivateDnsZoneResourceGroupName rg-dns -PrivateDnsZoneSubscriptionId 00000000-0000-0000-0000-000000000000
 
 .NOTES
  Requires Azure PowerShell Az modules with permissions to manage virtual networks, private endpoints, private DNS, and Azure Virtual Desktop workspaces.
@@ -59,6 +62,9 @@ param(
     [Parameter(Mandatory = $true, HelpMessage = 'Resource group containing the Azure Private DNS zone.')]
     [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneResourceGroupName,
 
+    [Parameter(Mandatory = $true, HelpMessage = 'Subscription ID containing the Azure Private DNS zone.')]
+    [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneSubscriptionId,
+
     [Parameter(HelpMessage = 'Set to $true to preview actions without applying changes.')]
     [bool]$DryRun = $false
 )
@@ -66,7 +72,7 @@ param(
 # Derive the private endpoint name from the workspace name.
 $PrivateEndpointName = "pe-$WorkspaceName"
 
-# Hard-coded private DNS zone group name used for the association.
+# Hard-coded private DNS zone group name and DNS zone name used for the association.
 $PrivateDnsZoneGroupName = 'default'
 $PrivateDnsZoneName = 'privatelink.wvd.microsoft.com'
 
@@ -218,16 +224,31 @@ function New-WorkspacePrivateEndpoint {
 function Get-PrivateDnsZoneResource {
     param(
         [string]$ResourceGroupName,
-        [string]$ZoneName
+        [string]$ZoneName,
+        [string]$SubscriptionId,
+        [switch]$CreateIfMissing
     )
 
-    # Attempt to reuse the existing private DNS zone before creating one.
-    $zone = Get-AzPrivateDnsZone -Name $ZoneName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-    if (-not $zone) {
-        $zone = New-AzPrivateDnsZone -Name $ZoneName -ResourceGroupName $ResourceGroupName
+    $originalContext = Get-AzContext
+    $contextChanged = $false
+    if ($SubscriptionId -and $originalContext -and $originalContext.Subscription.Id -ne $SubscriptionId) {
+        Set-AzContext -SubscriptionId $SubscriptionId | Out-Null
+        $contextChanged = $true
     }
 
-    return $zone
+    try {
+        # Attempt to reuse the existing private DNS zone before creating one.
+        $zone = Get-AzPrivateDnsZone -Name $ZoneName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+        if (-not $zone -and $CreateIfMissing.IsPresent) {
+            $zone = New-AzPrivateDnsZone -Name $ZoneName -ResourceGroupName $ResourceGroupName
+        }
+        return $zone
+    }
+    finally {
+        if ($contextChanged -and $originalContext) {
+            Set-AzContext -SubscriptionId $originalContext.Subscription.Id | Out-Null
+        }
+    }
 }
 
 # Ensures the private endpoint is associated with the DNS zone group.
@@ -412,15 +433,15 @@ if (-not $initialSubnet) {
 }
 
 $existingPrivateEndpoint = Get-AzPrivateEndpoint -Name $PrivateEndpointName -ResourceGroupName $WorkspaceResourceGroupName -ErrorAction SilentlyContinue
-$existingDnsZone = Get-AzPrivateDnsZone -Name $PrivateDnsZoneName -ResourceGroupName $PrivateDnsZoneResourceGroupName -ErrorAction SilentlyContinue
+$existingDnsZone = Get-PrivateDnsZoneResource -ResourceGroupName $PrivateDnsZoneResourceGroupName -ZoneName $PrivateDnsZoneName -SubscriptionId $PrivateDnsZoneSubscriptionId
 $existingZoneGroup = $null
 if ($existingPrivateEndpoint) {
     $existingZoneGroup = Get-AzPrivateDnsZoneGroup -ResourceGroupName $WorkspaceResourceGroupName -PrivateEndpointName $PrivateEndpointName -Name $PrivateDnsZoneGroupName -ErrorAction SilentlyContinue
 }
 
 if ($DryRun -eq $true) {
-        # Build a workbook-friendly preview when -DryRun is supplied.
-$plan = [System.Collections.Generic.List[object]]::new()
+    # Build a workbook-friendly preview when -DryRun is supplied.
+    $plan = [System.Collections.Generic.List[object]]::new()
 
     $subnetPolicyStatus = if ($initialSubnet.PrivateEndpointNetworkPolicies -eq 'Disabled') { 'NoChange' } else { 'WillDisable' }
     $subnetPolicyMessage = if ($subnetPolicyStatus -eq 'NoChange') {
@@ -481,7 +502,7 @@ if (-not $existingPrivateEndpoint) {
 }
 
 $privateEndpoint = Get-AzPrivateEndpoint -Name $PrivateEndpointName -ResourceGroupName $WorkspaceResourceGroupName
-$dnsZone = Get-PrivateDnsZoneResource -ResourceGroupName $PrivateDnsZoneResourceGroupName -ZoneName $PrivateDnsZoneName
+$dnsZone = Get-PrivateDnsZoneResource -ResourceGroupName $PrivateDnsZoneResourceGroupName -ZoneName $PrivateDnsZoneName -SubscriptionId $PrivateDnsZoneSubscriptionId -CreateIfMissing
 Set-PrivateDnsZoneGroup -PrivateEndpoint $privateEndpoint -Zone $dnsZone -ZoneGroupName $PrivateDnsZoneGroupName -PrivateEndpointResourceGroupName $WorkspaceResourceGroupName | Out-Null
 
 # Wait for Azure to expose CustomDnsConfigs before writing DNS records.
