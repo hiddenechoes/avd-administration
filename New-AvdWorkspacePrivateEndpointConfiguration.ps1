@@ -45,7 +45,6 @@
  Requires Azure PowerShell Az modules with permissions to manage virtual networks, private endpoints, private DNS, and Azure Virtual Desktop workspaces.
 #>
 
-
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [Parameter(Mandatory = $true, HelpMessage = 'Resource group name for the Azure Virtual Desktop workspace.')]
@@ -103,7 +102,6 @@ foreach ($module in $requiredModules) {
         }
     }
 }
-
 
 # Constants for DNS wait behavior.
 $dnsConfigTimeoutSeconds = 90
@@ -475,8 +473,6 @@ $plan = [System.Collections.Generic.List[object]]::new()
 
     return $plan
 }
-
-
 
 # Apply subnet policy changes and provision the private endpoint as needed.
 $targetSubnet = Set-PrivateEndpointSubnetPolicy -VirtualNetwork $virtualNetwork -SubnetName $SubnetName -ResourceGroupName $VirtualNetworkResourceGroupName
