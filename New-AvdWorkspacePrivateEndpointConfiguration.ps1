@@ -10,40 +10,40 @@
 
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, HelpMessage = 'Resource group name for the Azure Virtual Desktop workspace.')]
     [ValidateNotNullOrEmpty()][string]$WorkspaceResourceGroupName,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, HelpMessage = 'Name of the Azure Virtual Desktop workspace.')]
     [ValidateNotNullOrEmpty()][string]$WorkspaceName,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, HelpMessage = 'Name to assign to the workspace private endpoint.')]
     [ValidateNotNullOrEmpty()][string]$PrivateEndpointName,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, HelpMessage = 'Azure region where the resources reside (example: eastus).')]
     [ValidateNotNullOrEmpty()][string]$Location,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, HelpMessage = 'Resource group containing the virtual network for the private endpoint.')]
     [ValidateNotNullOrEmpty()][string]$VirtualNetworkResourceGroupName,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, HelpMessage = 'Name of the virtual network that hosts the private endpoint subnet.')]
     [ValidateNotNullOrEmpty()][string]$VirtualNetworkName,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, HelpMessage = 'Name of the subnet where the private endpoint will be created.')]
     [ValidateNotNullOrEmpty()][string]$SubnetName,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, HelpMessage = 'Resource group containing the Azure Private DNS zone.')]
     [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneResourceGroupName,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, HelpMessage = 'Name of the Azure Private DNS zone for AVD (example: privatelink.wvd.microsoft.com).')]
     [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneName,
 
-    [Parameter()]
+    [Parameter(HelpMessage = 'Name of the private DNS zone group to link with the private endpoint.')]
     [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneGroupName = "avd-zonegroup",
 
-    [Parameter()]
+    [Parameter(HelpMessage = 'Set to $true to skip DNS resolution and connectivity validation.')]
     [bool]$SkipDnsValidation = $false,
 
-    [Parameter()]
+    [Parameter(HelpMessage = 'Set to $true to preview actions without applying changes.')]
     [bool]$DryRun = $false
 )
 
