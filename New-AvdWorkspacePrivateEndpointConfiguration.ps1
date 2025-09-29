@@ -186,7 +186,15 @@ function Set-PrivateDnsZoneGroup {
         return $zoneGroup
     }
 
-    $zoneConfig = New-AzPrivateDnsZoneConfig -Name "default" -PrivateDnsZoneId $Zone.Id
+    $zoneId = if ($Zone.Id) {
+        $Zone.Id
+    } elseif ($Zone.ResourceId) {
+        $Zone.ResourceId
+    } else {
+        throw 'The private DNS zone object does not contain an Id or ResourceId.'
+    }
+
+    $zoneConfig = New-AzPrivateDnsZoneConfig -Name "default" -PrivateDnsZoneId $zoneId
     New-AzPrivateDnsZoneGroup -ResourceGroupName $PrivateEndpointResourceGroupName -PrivateEndpointName $PrivateEndpoint.Name -Name $ZoneGroupName -PrivateDnsZoneConfig $zoneConfig
 }
 
