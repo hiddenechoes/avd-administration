@@ -3,13 +3,11 @@
  Configures private endpoint connectivity for an Azure Virtual Desktop workspace.
 .DESCRIPTION
  Creates or updates the workspace private endpoint, aligns private DNS, disables public access, and validates connectivity for workbook automation runs.
+ The automation runbook resolves the target subscription automatically based on the workspace resource group.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$SubscriptionId,
-
     [Parameter(Mandatory = $true)]
     [string]$WorkspaceResourceGroupName,
 
@@ -336,9 +334,38 @@ if (-not $PSCmdlet.ShouldProcess("Workspace '{0}'" -f $WorkspaceName, "Configure
     return
 }
 
-Write-Verbose "Authenticating and selecting subscription $SubscriptionId"
+Write-Verbose "Authenticating to Azure using managed identity if available."
 $null = Connect-AzAccount -Identity -ErrorAction SilentlyContinue
-Select-AzSubscription -SubscriptionId $SubscriptionId | Out-Null
+
+$context = Get-AzContext
+if (-not $context -or -not $context.Subscription) {
+    throw "Unable to determine the current Azure subscription context. Ensure the automation account identity has access."
+}
+
+try {
+    Get-AzResourceGroup -Name $WorkspaceResourceGroupName -ErrorAction Stop | Out-Null
+}
+catch {
+    $subscriptions = Get-AzSubscription -ErrorAction Stop | Where-Object { $_.State -eq 'Enabled' }
+    $context = $null
+    foreach ($subscription in $subscriptions) {
+        Set-AzContext -SubscriptionId $subscription.Id | Out-Null
+        try {
+            Get-AzResourceGroup -Name $WorkspaceResourceGroupName -ErrorAction Stop | Out-Null
+            $context = Get-AzContext
+            break
+        }
+        catch {
+            $context = $null
+        }
+    }
+
+    if (-not $context) {
+        throw "Workspace resource group '$WorkspaceResourceGroupName' was not found in any accessible subscription."
+    }
+}
+
+Write-Verbose ("Using subscription {0} ({1})" -f $context.Subscription.Name, $context.Subscription.Id)
 
 $workspaceResource = Get-AzResource -ResourceGroupName $WorkspaceResourceGroupName -ResourceType "Microsoft.DesktopVirtualization/workspaces" -Name $WorkspaceName -ErrorAction Stop
 
