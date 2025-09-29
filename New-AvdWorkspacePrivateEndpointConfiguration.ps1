@@ -26,12 +26,6 @@
 .PARAMETER PrivateDnsZoneResourceGroupName
  Resource group containing the Azure Private DNS zone for AVD.
 
-.PARAMETER PrivateDnsZoneName
- Name of the Private DNS zone (for example, privatelink.wvd.microsoft.com).
-
-.PARAMETER PrivateDnsZoneGroupName
- Name of the private DNS zone group to associate with the private endpoint. Defaults to avd-zonegroup.
-
 .PARAMETER DryRun
  When set to true, shows the planned operations without making changes.
 
@@ -50,8 +44,8 @@ param(
     [Parameter(Mandatory = $true, HelpMessage = 'Name of the Azure Virtual Desktop workspace.')]
     [ValidateNotNullOrEmpty()][string]$WorkspaceName,
 
-    [Parameter(Mandatory = $true, HelpMessage = 'Azure region where the resources reside (example: eastus).')]
-    [ValidateNotNullOrEmpty()][string]$Location,
+    [Parameter(Mandatory = $true, HelpMessage = 'Azure region where the resources reside (U.S. regions only).')]
+    [ValidateSet('westus', 'westus2', 'westcentralus', 'southcentralus', 'eastus', 'eastus2', 'centralus', 'northcentralus')][string]$Location = 'westus2',
 
     [Parameter(Mandatory = $true, HelpMessage = 'Resource group containing the virtual network for the private endpoint.')]
     [ValidateNotNullOrEmpty()][string]$VirtualNetworkResourceGroupName,
@@ -65,18 +59,16 @@ param(
     [Parameter(Mandatory = $true, HelpMessage = 'Resource group containing the Azure Private DNS zone.')]
     [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneResourceGroupName,
 
-    [Parameter(Mandatory = $true, HelpMessage = 'Name of the Azure Private DNS zone for AVD (example: privatelink.wvd.microsoft.com).')]
-    [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneName,
-
-    [Parameter(HelpMessage = 'Name of the private DNS zone group to link with the private endpoint.')]
-    [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneGroupName = "avd-zonegroup",
-
     [Parameter(HelpMessage = 'Set to $true to preview actions without applying changes.')]
     [bool]$DryRun = $false
 )
 
 # Derive the private endpoint name from the workspace name.
 $PrivateEndpointName = "pe-$WorkspaceName"
+
+# Hard-coded private DNS zone group name used for the association.
+$PrivateDnsZoneGroupName = 'default'
+$PrivateDnsZoneName = 'privatelink.wvd.microsoft.com'
 
 # Ensure required Az modules are loaded before execution.
 $requiredModules = @(
