@@ -5,36 +5,37 @@
  Creates or updates the workspace private endpoint, aligns private DNS, disables public access, and validates connectivity for workbook automation runs.
  The automation runbook resolves the target subscription automatically based on the workspace resource group.
  The workspace private endpoint is deployed into the same resource group as the workspace.
+ Specify -DryRun to preview planned operations without making changes.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$WorkspaceResourceGroupName,
+    [ValidateNotNullOrEmpty()][string]$WorkspaceResourceGroupName,
 
     [Parameter(Mandatory = $true)]
-    [string]$WorkspaceName,
+    [ValidateNotNullOrEmpty()][string]$WorkspaceName,
 
     [Parameter(Mandatory = $true)]
-    [string]$PrivateEndpointName,
+    [ValidateNotNullOrEmpty()][string]$PrivateEndpointName,
 
     [Parameter(Mandatory = $true)]
-    [string]$Location,
+    [ValidateNotNullOrEmpty()][string]$Location,
 
     [Parameter(Mandatory = $true)]
-    [string]$VirtualNetworkResourceGroupName,
+    [ValidateNotNullOrEmpty()][string]$VirtualNetworkResourceGroupName,
 
     [Parameter(Mandatory = $true)]
-    [string]$VirtualNetworkName,
+    [ValidateNotNullOrEmpty()][string]$VirtualNetworkName,
 
     [Parameter(Mandatory = $true)]
-    [string]$SubnetName,
+    [ValidateNotNullOrEmpty()][string]$SubnetName,
 
     [Parameter(Mandatory = $true)]
-    [string]$PrivateDnsZoneResourceGroupName,
+    [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneResourceGroupName,
 
     [Parameter(Mandatory = $true)]
-    [string]$PrivateDnsZoneName,
+    [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneName,
 
     [Parameter()]
     [string]$PrivateDnsZoneVirtualNetworkLinkName = "avd-dnslink",
@@ -43,7 +44,10 @@ param(
     [string]$PrivateDnsZoneGroupName = "avd-zonegroup",
 
     [Parameter()]
-    [switch]$SkipDnsValidation
+    [switch]$SkipDnsValidation,
+
+    [Parameter()]
+    [switch]$DryRun
 )
 
 # Ensure required Az modules are loaded before execution.
@@ -107,12 +111,13 @@ function Set-PrivateEndpointSubnetPolicy {
 # Creates the private endpoint if it does not already exist.
 function New-WorkspacePrivateEndpoint {
     param(
-        [string]$ResourceGroupName,
-        [string]$Name,
-        [string]$Location,
+        [ValidateNotNullOrEmpty()][string]$ResourceGroupName,
+        [ValidateNotNullOrEmpty()][string]$Name,
+        [ValidateNotNullOrEmpty()][string]$Location,
         [Microsoft.Azure.Commands.Network.Models.PSSubnet]$Subnet,
-        [string]$TargetResourceId,
-        [string[]]$GroupIds
+        [ValidateNotNullOrEmpty()][string]$TargetResourceId,
+        [string[]]$GroupIds = @('workspace'),
+        [switch]$DryRun
     )
 
     $existing = Get-AzPrivateEndpoint -Name $Name -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
@@ -120,7 +125,31 @@ function New-WorkspacePrivateEndpoint {
         return $existing
     }
 
-    $connection = New-AzPrivateLinkServiceConnection -Name "$Name-connection" -PrivateLinkServiceId $TargetResourceId -GroupIds $GroupIds
+    if (-not $GroupIds -or [string]::IsNullOrWhiteSpace($GroupIds[0])) {
+        $GroupIds = @('workspace')
+    }
+
+    $connectionParams = @{
+        Name                 = "$Name-connection"
+        PrivateLinkServiceId = $TargetResourceId
+    }
+
+    $connectionCommand = Get-Command -Name New-AzPrivateLinkServiceConnection -ErrorAction Stop
+    if ($connectionCommand.Parameters.ContainsKey('GroupIds')) {
+        $connectionParams['GroupIds'] = $GroupIds
+    }
+    elseif ($connectionCommand.Parameters.ContainsKey('GroupId')) {
+        $connectionParams['GroupId'] = $GroupIds[0]
+    }
+    else {
+        throw 'The current Az.Network module does not support specifying target subresources for private endpoints (GroupId/GroupIds).'
+    }
+
+    $connection = New-AzPrivateLinkServiceConnection @connectionParams
+    if (-not $connection) {
+        throw 'Failed to create private link service connection for the workspace.'
+    }
+
     New-AzPrivateEndpoint -Name $Name -ResourceGroupName $ResourceGroupName -Location $Location -Subnet $Subnet -PrivateLinkServiceConnection $connection
 }
 
@@ -164,6 +193,14 @@ function Set-PrivateDnsZoneGroup {
         [string]$PrivateEndpointResourceGroupName
     )
 
+    if (-not $PrivateEndpoint) {
+        throw 'A provisioning private endpoint instance is required to configure the DNS zone group.'
+    }
+
+    if (-not $Zone) {
+        throw 'A private DNS zone is required to configure the DNS zone group.'
+    }
+
     $zoneGroup = Get-AzPrivateDnsZoneGroup -ResourceGroupName $PrivateEndpointResourceGroupName -PrivateEndpointName $PrivateEndpoint.Name -Name $ZoneGroupName -ErrorAction SilentlyContinue
     if ($zoneGroup) {
         return $zoneGroup
@@ -179,6 +216,14 @@ function Update-PrivateDnsRecords {
         [Microsoft.Azure.Commands.Network.Models.PSPrivateEndpoint]$PrivateEndpoint,
         [Microsoft.Azure.Commands.PrivateDns.Models.PSPrivateDnsZone]$Zone
     )
+
+    if (-not $PrivateEndpoint) {
+        throw 'A private endpoint instance is required to synchronize DNS records.'
+    }
+
+    if (-not $Zone) {
+        throw 'A private DNS zone instance is required to synchronize DNS records.'
+    }
 
     if (-not $PrivateEndpoint.CustomDnsConfigs) {
         return
@@ -328,6 +373,10 @@ function Test-PrivateEndpointConnectivity {
 }
 
 # Honor PowerShell ShouldProcess to support -WhatIf and -Confirm.
+if ($DryRun) {
+    Write-Warning 'DryRun specified. No changes will be made; displaying planned operations only.'
+}
+
 if (-not $PSCmdlet.ShouldProcess("Workspace '{0}'" -f $WorkspaceName, "Configure private endpoint connectivity")) {
     return
 }
@@ -363,14 +412,90 @@ catch {
     }
 }
 
+Set-AzContext -SubscriptionId $context.Subscription.Id | Out-Null
 Write-Verbose ("Using subscription {0} ({1})" -f $context.Subscription.Name, $context.Subscription.Id)
 
 $workspaceResource = Get-AzResource -ResourceGroupName $WorkspaceResourceGroupName -ResourceType "Microsoft.DesktopVirtualization/workspaces" -Name $WorkspaceName -ErrorAction Stop
+$workspaceCurrent = Get-AzWvdWorkspace -ResourceGroupName $WorkspaceResourceGroupName -Name $WorkspaceName -ErrorAction Stop
 
 $virtualNetwork = Get-AzVirtualNetwork -Name $VirtualNetworkName -ResourceGroupName $VirtualNetworkResourceGroupName -ErrorAction Stop
+$initialSubnet = $virtualNetwork | Get-AzVirtualNetworkSubnetConfig -Name $SubnetName
+if (-not $initialSubnet) {
+    throw "Subnet '$SubnetName' not found in virtual network '$VirtualNetworkName'."
+}
+
+$existingPrivateEndpoint = Get-AzPrivateEndpoint -Name $PrivateEndpointName -ResourceGroupName $WorkspaceResourceGroupName -ErrorAction SilentlyContinue
+$existingDnsZone = Get-AzPrivateDnsZone -Name $PrivateDnsZoneName -ResourceGroupName $PrivateDnsZoneResourceGroupName -ErrorAction SilentlyContinue
+$existingDnsLink = $null
+if ($existingDnsZone) {
+    $existingDnsLink = Get-AzPrivateDnsVirtualNetworkLink -ResourceGroupName $existingDnsZone.ResourceGroupName -ZoneName $existingDnsZone.Name -Name $PrivateDnsZoneVirtualNetworkLinkName -ErrorAction SilentlyContinue
+}
+$existingZoneGroup = $null
+if ($existingPrivateEndpoint) {
+    $existingZoneGroup = Get-AzPrivateDnsZoneGroup -ResourceGroupName $WorkspaceResourceGroupName -PrivateEndpointName $PrivateEndpointName -Name $PrivateDnsZoneGroupName -ErrorAction SilentlyContinue
+}
+
+if ($DryRun) {
+    $plan = [System.Collections.Generic.List[object]]::new()
+
+    $subnetPolicyStatus = if ($initialSubnet.PrivateEndpointNetworkPolicies -eq 'Disabled') { 'NoChange' } else { 'WillDisable' }
+    $subnetPolicyMessage = if ($subnetPolicyStatus -eq 'NoChange') {
+        "Subnet '$SubnetName' already allows private endpoints."
+    } else {
+        "Would disable private endpoint network policies on subnet '$SubnetName'."
+    }
+    $plan.Add((Write-Step -Step 'SubnetPolicy' -Status $subnetPolicyStatus -Message $subnetPolicyMessage))
+
+    if ($existingPrivateEndpoint) {
+        $plan.Add((Write-Step -Step 'PrivateEndpoint' -Status 'Existing' -Message "Would reuse private endpoint '$PrivateEndpointName'."))
+    } else {
+        $plan.Add((Write-Step -Step 'PrivateEndpoint' -Status 'Create' -Message "Would create private endpoint '$PrivateEndpointName' in resource group '$WorkspaceResourceGroupName'."))
+    }
+
+    if ($existingDnsZone) {
+        $plan.Add((Write-Step -Step 'PrivateDnsZone' -Status 'Existing' -Message "Private DNS zone '$PrivateDnsZoneName' already present."))
+    } else {
+        $plan.Add((Write-Step -Step 'PrivateDnsZone' -Status 'Create' -Message "Would create private DNS zone '$PrivateDnsZoneName'."))
+    }
+
+    if ($existingDnsLink) {
+        $plan.Add((Write-Step -Step 'DnsLink' -Status 'Existing' -Message "Virtual network '$VirtualNetworkName' already linked to private DNS zone."))
+    } else {
+        $plan.Add((Write-Step -Step 'DnsLink' -Status 'Create' -Message "Would link virtual network '$VirtualNetworkName' to private DNS zone with auto-registration."))
+    }
+
+    if ($existingZoneGroup) {
+        $plan.Add((Write-Step -Step 'DnsZoneGroup' -Status 'Existing' -Message "Private endpoint already associated with DNS zone group '$PrivateDnsZoneGroupName'."))
+    } else {
+        $plan.Add((Write-Step -Step 'DnsZoneGroup' -Status 'Create' -Message "Would associate private endpoint with DNS zone group '$PrivateDnsZoneGroupName'."))
+    }
+
+    $publicAccessStatus = if ($workspaceCurrent.PublicNetworkAccess -eq 'Disabled') { 'Disabled' } else { 'WillDisable' }
+    $publicAccessMessage = if ($publicAccessStatus -eq 'Disabled') {
+        'Workspace public network access already disabled.'
+    } else {
+        'Would disable workspace public network access.'
+    }
+    $plan.Add((Write-Step -Step 'PublicNetworkAccess' -Status $publicAccessStatus -Message $publicAccessMessage))
+
+    $plan.Add((Write-Step -Step 'DryRun' -Status 'Complete' -Message 'Dry run completed. No changes were made.'))
+
+    return $plan
+}
+
 $targetSubnet = Set-PrivateEndpointSubnetPolicy -VirtualNetwork $virtualNetwork -SubnetName $SubnetName
 
-$privateEndpoint = New-WorkspacePrivateEndpoint -ResourceGroupName $WorkspaceResourceGroupName -Name $PrivateEndpointName -Location $Location -Subnet $targetSubnet -TargetResourceId $workspaceResource.ResourceId -GroupIds @("global")
+# Determine the correct private endpoint subresource (group ID) for the workspace resource type.
+$subresourceMap = @{
+    'microsoft.desktopvirtualization/workspaces' = 'workspace'
+}
+$workspaceResourceTypeKey = $workspaceResource.ResourceType.ToLowerInvariant()
+$groupIds = @($subresourceMap[$workspaceResourceTypeKey])
+if (-not $groupIds -or [string]::IsNullOrWhiteSpace($groupIds[0])) {
+    $groupIds = @('workspace')
+}
+
+$privateEndpoint = New-WorkspacePrivateEndpoint -ResourceGroupName $WorkspaceResourceGroupName -Name $PrivateEndpointName -Location $Location -Subnet $targetSubnet -TargetResourceId $workspaceResource.ResourceId -GroupIds $groupIds
 $privateEndpoint = Get-AzPrivateEndpoint -Name $PrivateEndpoint.Name -ResourceGroupName $WorkspaceResourceGroupName
 
 $dnsZone = Get-PrivateDnsZoneResource -ResourceGroupName $PrivateDnsZoneResourceGroupName -ZoneName $PrivateDnsZoneName
