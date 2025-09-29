@@ -91,7 +91,8 @@ function Write-Step {
 function Set-PrivateEndpointSubnetPolicy {
     param(
         [Microsoft.Azure.Commands.Network.Models.PSVirtualNetwork]$VirtualNetwork,
-        [string]$SubnetName
+        [string]$SubnetName,
+        [string]$ResourceGroupName
     )
 
     $subnet = $VirtualNetwork | Get-AzVirtualNetworkSubnetConfig -Name $SubnetName
@@ -99,12 +100,14 @@ function Set-PrivateEndpointSubnetPolicy {
         throw "Subnet '$SubnetName' not found in virtual network '$($VirtualNetwork.Name)'."
     }
 
-    $plan.Add((Write-Step -Step 'DnsRecords' -Status 'ManualSync' -Message "Script will poll up to $DnsRecordWaitSeconds seconds for private endpoint DNS data before syncing records."))
-
     if ($subnet.PrivateEndpointNetworkPolicies -ne "Disabled") {
         $subnet.PrivateEndpointNetworkPolicies = "Disabled"
         $VirtualNetwork | Set-AzVirtualNetwork | Out-Null
-        $VirtualNetwork = Get-AzVirtualNetwork -Name $VirtualNetwork.Name -ResourceGroupName $VirtualNetwork.ResourceGroupName
+        $effectiveResourceGroup = if ($ResourceGroupName) { $ResourceGroupName } else { $VirtualNetwork.ResourceGroupName }
+        if (-not $effectiveResourceGroup) {
+            throw "Unable to resolve the virtual network resource group. Provide VirtualNetworkResourceGroupName."
+        }
+        $VirtualNetwork = Get-AzVirtualNetwork -Name $VirtualNetwork.Name -ResourceGroupName $effectiveResourceGroup
         $subnet = $VirtualNetwork | Get-AzVirtualNetworkSubnetConfig -Name $SubnetName
     }
 
@@ -454,7 +457,7 @@ if ($DryRun -eq $true) {
         $plan.Add((Write-Step -Step 'DnsZoneGroup' -Status 'Create' -Message "Would associate private endpoint with DNS zone group '$PrivateDnsZoneGroupName'."))
     }
 
-    $plan.Add((Write-Step -Step 'DnsRecords' -Status 'ManualSync' -Message "Script will poll up to $DnsRecordWaitSeconds seconds for private endpoint DNS data before syncing records."))
+    $plan.Add((Write-Step -Step 'DnsRecords' -Status 'ManualSync' -Message ("Script will poll up to {0} seconds for private endpoint DNS data before syncing records." -f $DnsRecordWaitSeconds)))
 
     $publicAccessStatus = if ($workspaceCurrent.PublicNetworkAccess -eq 'Disabled') { 'Disabled' } else { 'WillDisable' }
     $publicAccessMessage = if ($publicAccessStatus -eq 'Disabled') {
@@ -469,7 +472,9 @@ if ($DryRun -eq $true) {
     return $plan
 }
 
-$targetSubnet = Set-PrivateEndpointSubnetPolicy -VirtualNetwork $virtualNetwork -SubnetName $SubnetName
+
+
+$targetSubnet = Set-PrivateEndpointSubnetPolicy -VirtualNetwork $virtualNetwork -SubnetName $SubnetName -ResourceGroupName $VirtualNetworkResourceGroupName
 
 # Determine the correct private endpoint subresource (group ID) for the workspace resource type.
 $subresourceMap = @{
@@ -481,8 +486,13 @@ if (-not $groupIds -or [string]::IsNullOrWhiteSpace($groupIds[0])) {
     $groupIds = @('global')
 }
 
-$privateEndpoint = New-WorkspacePrivateEndpoint -ResourceGroupName $WorkspaceResourceGroupName -Name $PrivateEndpointName -Location $Location -Subnet $targetSubnet -TargetResourceId $workspaceResource.ResourceId -GroupIds $groupIds
-$privateEndpoint = Get-AzPrivateEndpoint -Name $PrivateEndpoint.Name -ResourceGroupName $WorkspaceResourceGroupName
+if ($existingPrivateEndpoint) {
+    $privateEndpoint = $existingPrivateEndpoint
+}
+else {
+    $privateEndpoint = New-WorkspacePrivateEndpoint -ResourceGroupName $WorkspaceResourceGroupName -Name $PrivateEndpointName -Location $Location -Subnet $targetSubnet -TargetResourceId $workspaceResource.ResourceId -GroupIds $groupIds
+    $privateEndpoint = Get-AzPrivateEndpoint -Name $PrivateEndpoint.Name -ResourceGroupName $WorkspaceResourceGroupName
+}
 
 $dnsZone = Get-PrivateDnsZoneResource -ResourceGroupName $PrivateDnsZoneResourceGroupName -ZoneName $PrivateDnsZoneName
 Set-PrivateDnsZoneGroup -PrivateEndpoint $privateEndpoint -Zone $dnsZone -ZoneGroupName $PrivateDnsZoneGroupName -PrivateEndpointResourceGroupName $WorkspaceResourceGroupName | Out-Null
