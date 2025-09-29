@@ -5,7 +5,7 @@
  Creates or updates the workspace private endpoint, aligns private DNS, disables public access, and validates connectivity for workbook automation runs.
  The automation runbook resolves the target subscription automatically based on the workspace resource group.
  The workspace private endpoint is deployed into the same resource group as the workspace.
- Specify -DryRun to preview planned operations without making changes.
+ Specify -DryRun:$true to preview planned operations without making changes.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -38,13 +38,13 @@ param(
     [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneName,
 
     [Parameter()]
-    [string]$PrivateDnsZoneGroupName = "avd-zonegroup",
+    [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneGroupName = "avd-zonegroup",
 
     [Parameter()]
-    [switch]$SkipDnsValidation,
+    [bool]$SkipDnsValidation = $false,
 
     [Parameter()]
-    [switch]$DryRun
+    [bool]$DryRun = $false
 )
 
 # Ensure required Az modules are loaded before execution.
@@ -113,8 +113,7 @@ function New-WorkspacePrivateEndpoint {
         [ValidateNotNullOrEmpty()][string]$Location,
         [Microsoft.Azure.Commands.Network.Models.PSSubnet]$Subnet,
         [ValidateNotNullOrEmpty()][string]$TargetResourceId,
-        [string[]]$GroupIds = @('workspace'),
-        [switch]$DryRun
+        [string[]]$GroupIds = @('global')
     )
 
     $existing = Get-AzPrivateEndpoint -Name $Name -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
@@ -123,7 +122,7 @@ function New-WorkspacePrivateEndpoint {
     }
 
     if (-not $GroupIds -or [string]::IsNullOrWhiteSpace($GroupIds[0])) {
-        $GroupIds = @('workspace')
+        $GroupIds = @('global')
     }
 
     $connectionParams = @{
@@ -354,8 +353,8 @@ function Test-PrivateEndpointConnectivity {
 }
 
 # Honor PowerShell ShouldProcess to support -WhatIf and -Confirm.
-if ($DryRun) {
-    Write-Warning 'DryRun specified. No changes will be made; displaying planned operations only.'
+if ($DryRun -eq $true) {
+    Write-Warning 'DryRun specified (true). No changes will be made; displaying planned operations only.'
 }
 
 if (-not $PSCmdlet.ShouldProcess("Workspace '{0}'" -f $WorkspaceName, "Configure private endpoint connectivity")) {
@@ -412,7 +411,7 @@ if ($existingPrivateEndpoint) {
     $existingZoneGroup = Get-AzPrivateDnsZoneGroup -ResourceGroupName $WorkspaceResourceGroupName -PrivateEndpointName $PrivateEndpointName -Name $PrivateDnsZoneGroupName -ErrorAction SilentlyContinue
 }
 
-if ($DryRun) {
+if ($DryRun -eq $true) {
     $plan = [System.Collections.Generic.List[object]]::new()
 
     $subnetPolicyStatus = if ($initialSubnet.PrivateEndpointNetworkPolicies -eq 'Disabled') { 'NoChange' } else { 'WillDisable' }
@@ -458,12 +457,12 @@ $targetSubnet = Set-PrivateEndpointSubnetPolicy -VirtualNetwork $virtualNetwork 
 
 # Determine the correct private endpoint subresource (group ID) for the workspace resource type.
 $subresourceMap = @{
-    'microsoft.desktopvirtualization/workspaces' = 'workspace'
+    'microsoft.desktopvirtualization/workspaces' = 'global'
 }
 $workspaceResourceTypeKey = $workspaceResource.ResourceType.ToLowerInvariant()
 $groupIds = @($subresourceMap[$workspaceResourceTypeKey])
 if (-not $groupIds -or [string]::IsNullOrWhiteSpace($groupIds[0])) {
-    $groupIds = @('workspace')
+    $groupIds = @('global')
 }
 
 $privateEndpoint = New-WorkspacePrivateEndpoint -ResourceGroupName $WorkspaceResourceGroupName -Name $PrivateEndpointName -Location $Location -Subnet $targetSubnet -TargetResourceId $workspaceResource.ResourceId -GroupIds $groupIds
@@ -489,7 +488,7 @@ $connectionDescription = if ($connectionState.PrivateLinkServiceConnectionState.
 $validationSummary = [System.Collections.Generic.List[object]]::new()
 $validationSummary.Add((Write-Step -Step "PrivateEndpoint" -Status $connectionStatus -Message $connectionDescription))
 
-if (-not $SkipDnsValidation) {
+if ($SkipDnsValidation -eq $false) {
     $dnsValidation = Test-PrivateEndpointDns -PrivateEndpoint $privateEndpoint
     foreach ($entry in $dnsValidation) {
         $validationSummary.Add((Write-Step -Step "DNS" -Status $entry.DnsStatus -Message ("{0} => {1}" -f $entry.Endpoint, ($entry.ResolvedIpAddresses -join ", "))))
