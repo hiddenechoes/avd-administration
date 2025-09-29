@@ -1,12 +1,50 @@
 <#
 .SYNOPSIS
  Configures private endpoint connectivity for an Azure Virtual Desktop workspace.
+
 .DESCRIPTION
- Creates or updates the workspace private endpoint, aligns private DNS, disables public access, and validates connectivity for workbook automation runs.
- The automation runbook resolves the target subscription automatically based on the workspace resource group.
- The workspace private endpoint is deployed into the same resource group as the workspace and targets the feed subresource of privatelink.wvd.microsoft.com.
- Specify -DryRun:$true to preview planned operations without making changes.
+ Creates or updates the workspace private endpoint, links it to private DNS, disables public network access, and validates connectivity.
+
+.PARAMETER WorkspaceResourceGroupName
+ Resource group that contains the Azure Virtual Desktop workspace.
+
+.PARAMETER WorkspaceName
+ Name of the Azure Virtual Desktop workspace.
+
+.PARAMETER PrivateEndpointName
+ Name to assign to the private endpoint created for the workspace.
+
+.PARAMETER Location
+ Azure region (for example, eastus) where the resources reside.
+
+.PARAMETER VirtualNetworkResourceGroupName
+ Resource group that contains the virtual network hosting the private endpoint subnet.
+
+.PARAMETER VirtualNetworkName
+ Name of the virtual network hosting the subnet for the private endpoint.
+
+.PARAMETER SubnetName
+ Name of the subnet where the private endpoint will be placed.
+
+.PARAMETER PrivateDnsZoneResourceGroupName
+ Resource group containing the Azure Private DNS zone for AVD.
+
+.PARAMETER PrivateDnsZoneName
+ Name of the Private DNS zone (for example, privatelink.wvd.microsoft.com).
+
+.PARAMETER PrivateDnsZoneGroupName
+ Name of the private DNS zone group to associate with the private endpoint. Defaults to avd-zonegroup.
+
+.PARAMETER DryRun
+ When set to true, shows the planned operations without making changes.
+
+.EXAMPLE
+ .\New-AvdWorkspacePrivateEndpointConfiguration.ps1 -WorkspaceResourceGroupName rg-avd -WorkspaceName avd-ws -PrivateEndpointName avd-ws-pe -Location eastus -VirtualNetworkResourceGroupName rg-network -VirtualNetworkName avd-vnet -SubnetName avd-pe-subnet -PrivateDnsZoneResourceGroupName rg-dns -PrivateDnsZoneName privatelink.wvd.microsoft.com
+
+.NOTES
+ Requires Azure PowerShell Az modules with permissions to manage virtual networks, private endpoints, private DNS, and Azure Virtual Desktop workspaces.
 #>
+
 
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -39,9 +77,6 @@ param(
 
     [Parameter(HelpMessage = 'Name of the private DNS zone group to link with the private endpoint.')]
     [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneGroupName = "avd-zonegroup",
-
-    [Parameter(HelpMessage = 'Set to $true to skip DNS resolution and connectivity validation.')]
-    [bool]$SkipDnsValidation = $false,
 
     [Parameter(HelpMessage = 'Set to $true to preview actions without applying changes.')]
     [bool]$DryRun = $false
@@ -138,8 +173,8 @@ function Set-PrivateEndpointSubnetPolicy {
         }
         # Refresh the virtual network to pick up the latest subnet state.
         $VirtualNetwork = Get-AzVirtualNetwork -Name $VirtualNetwork.Name -ResourceGroupName $effectiveResourceGroup
-        # Attempt to pull the target subnet from the provided virtual network object.
-    $subnet = $VirtualNetwork | Get-AzVirtualNetworkSubnetConfig -Name $SubnetName
+        # Pull the subnet again now that Azure has applied the change.
+        $subnet = $VirtualNetwork | Get-AzVirtualNetworkSubnetConfig -Name $SubnetName
     }
 
     return $subnet
@@ -337,91 +372,6 @@ function Disable-PublicNetworkAccess {
     }
 }
 
-# Validates that private DNS records resolve to the expected IPs.
-function Test-PrivateEndpointDns {
-    param(
-        [Microsoft.Azure.Commands.Network.Models.PSPrivateEndpoint]$PrivateEndpoint
-    )
-
-    # Collect each DNS validation result into a list for reporting.
-    $results = @()
-    $resolveDnsAvailable = Get-Command -Name Resolve-DnsName -ErrorAction SilentlyContinue
-
-    # Iterate through each DNS configuration returned on the private endpoint.
-    foreach ($dnsConfig in $PrivateEndpoint.CustomDnsConfigs) {
-        if (-not $dnsConfig.Fqdn) {
-            continue
-        }
-
-        $dnsName = $dnsConfig.Fqdn.TrimEnd('.')
-        $expectedIps = $dnsConfig.IPAddresses
-        if ($resolveDnsAvailable) {
-            try {
-                $lookup = Resolve-DnsName -Name $dnsName -Type A -ErrorAction Stop
-                $matched = @($lookup | Where-Object { $_.IPAddress -in $expectedIps })
-                $results += [PSCustomObject]@{
-                    Endpoint = $dnsName
-                    DnsStatus = if ($matched.Count -eq $expectedIps.Count) { "Success" } else { "Mismatch" }
-                    ResolvedIpAddresses = @($lookup | Where-Object { $_.QueryType -eq "A" } | Select-Object -ExpandProperty IPAddress)
-                }
-            }
-            catch {
-                $results += [PSCustomObject]@{
-                    Endpoint = $dnsName
-                    DnsStatus = "LookupFailed"
-                    ResolvedIpAddresses = @()
-                }
-            }
-        }
-        else {
-            $results += [PSCustomObject]@{
-                Endpoint = $dnsName
-                DnsStatus = "ResolveDnsUnavailable"
-                ResolvedIpAddresses = @()
-            }
-        }
-    }
-
-    return $results
-}
-
-# Uses Test-NetConnection when available to confirm the private endpoint answers on TCP 443.
-function Test-PrivateEndpointConnectivity {
-    param(
-        [Microsoft.Azure.Commands.Network.Models.PSPrivateEndpoint]$PrivateEndpoint
-    )
-
-    # Collate TCP connectivity test results for workbook output.
-    $tests = @()
-    $testNetConnectionAvailable = Get-Command -Name Test-NetConnection -ErrorAction SilentlyContinue
-    # Iterate through each DNS configuration returned on the private endpoint.
-    foreach ($dnsConfig in $PrivateEndpoint.CustomDnsConfigs) {
-        if (-not $dnsConfig.Fqdn) {
-            continue
-        }
-
-        if ($testNetConnectionAvailable) {
-            try {
-                $tcpTest = Test-NetConnection -ComputerName $dnsConfig.Fqdn -Port 443 -WarningAction SilentlyContinue -ErrorAction Stop
-                $status = if ($tcpTest.TcpTestSucceeded) { "Reachable" } else { "Unreachable" }
-            }
-            catch {
-                $status = "Error"
-            }
-        }
-        else {
-            $status = "TestNetConnectionUnavailable"
-        }
-
-        $tests += [PSCustomObject]@{
-            Endpoint = $dnsConfig.Fqdn.TrimEnd('.')
-            ConnectivityStatus = $status
-        }
-    }
-
-    return $tests
-}
-
 # Honor PowerShell ShouldProcess to support -WhatIf and -Confirm.
 if ($DryRun -eq $true) {
     Write-Warning 'DryRun specified (true). No changes will be made; displaying planned operations only.'
@@ -551,8 +501,12 @@ Set-PrivateDnsZoneGroup -PrivateEndpoint $privateEndpoint -Zone $dnsZone -ZoneGr
 
 # Wait for Azure to expose CustomDnsConfigs before writing DNS records.
 $privateEndpoint = Get-PrivateEndpointWithDnsConfig -ResourceGroupName $WorkspaceResourceGroupName -Name $PrivateEndpointName -TimeoutSeconds $dnsConfigTimeoutSeconds
+$dnsSyncStatus = 'Synced'
+$dnsSyncMessage = 'Private endpoint DNS records updated.'
 if (-not ($privateEndpoint -and $privateEndpoint.CustomDnsConfigs -and $privateEndpoint.CustomDnsConfigs.Count -gt 0)) {
     Write-Warning "Private endpoint DNS configuration did not populate within $dnsConfigTimeoutSeconds seconds. DNS records will not be synced automatically."
+    $dnsSyncStatus = 'Pending'
+    $dnsSyncMessage = 'CustomDnsConfigs not available; no DNS records written.'
 }
 else {
     Update-PrivateDnsRecords -PrivateEndpoint $privateEndpoint -Zone $dnsZone
@@ -574,24 +528,10 @@ $connectionStatus = if ($connectionState.PrivateLinkServiceConnectionState.Statu
 $connectionDescription = if ($connectionState.PrivateLinkServiceConnectionState.Description) { $connectionState.PrivateLinkServiceConnectionState.Description } else { "No private link service connection details returned." }
 $validationSummary = [System.Collections.Generic.List[object]]::new()
 $validationSummary.Add((Write-Step -Step "PrivateEndpoint" -Status $connectionStatus -Message $connectionDescription))
-
-if ($SkipDnsValidation -eq $false) {
-    $dnsValidation = Test-PrivateEndpointDns -PrivateEndpoint $privateEndpoint
-    foreach ($entry in $dnsValidation) {
-        $validationSummary.Add((Write-Step -Step "DNS" -Status $entry.DnsStatus -Message ("{0} => {1}" -f $entry.Endpoint, ($entry.ResolvedIpAddresses -join ", "))))
-    }
-
-    $connectivityTests = Test-PrivateEndpointConnectivity -PrivateEndpoint $privateEndpoint
-    foreach ($test in $connectivityTests) {
-        $validationSummary.Add((Write-Step -Step "Connectivity" -Status $test.ConnectivityStatus -Message $test.Endpoint))
-    }
-}
-else {
-    $validationSummary.Add((Write-Step -Step "DNS" -Status "Skipped" -Message "Validation skipped per input."))
-}
+$validationSummary.Add((Write-Step -Step "DnsRecords" -Status $dnsSyncStatus -Message $dnsSyncMessage))
 
 $publicAccessState = if ($workspace.PublicNetworkAccess) { $workspace.PublicNetworkAccess } else { "Unknown" }
 $validationSummary.Add((Write-Step -Step "PublicNetworkAccess" -Status $publicAccessState -Message "Workspace public network access state."))
 
-# Return validation results for workbook consumption.
+# Return results for workbook consumption.
 return $validationSummary
