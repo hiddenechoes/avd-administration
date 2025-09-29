@@ -4,6 +4,7 @@
 .DESCRIPTION
  Creates or updates the workspace private endpoint, aligns private DNS, disables public access, and validates connectivity for workbook automation runs.
  The automation runbook resolves the target subscription automatically based on the workspace resource group.
+ The workspace private endpoint is deployed into the same resource group as the workspace.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -13,9 +14,6 @@ param(
 
     [Parameter(Mandatory = $true)]
     [string]$WorkspaceName,
-
-    [Parameter(Mandatory = $true)]
-    [string]$PrivateEndpointResourceGroupName,
 
     [Parameter(Mandatory = $true)]
     [string]$PrivateEndpointName,
@@ -372,12 +370,12 @@ $workspaceResource = Get-AzResource -ResourceGroupName $WorkspaceResourceGroupNa
 $virtualNetwork = Get-AzVirtualNetwork -Name $VirtualNetworkName -ResourceGroupName $VirtualNetworkResourceGroupName -ErrorAction Stop
 $targetSubnet = Set-PrivateEndpointSubnetPolicy -VirtualNetwork $virtualNetwork -SubnetName $SubnetName
 
-$privateEndpoint = New-WorkspacePrivateEndpoint -ResourceGroupName $PrivateEndpointResourceGroupName -Name $PrivateEndpointName -Location $Location -Subnet $targetSubnet -TargetResourceId $workspaceResource.ResourceId -GroupIds @("global")
-$privateEndpoint = Get-AzPrivateEndpoint -Name $PrivateEndpoint.Name -ResourceGroupName $PrivateEndpointResourceGroupName
+$privateEndpoint = New-WorkspacePrivateEndpoint -ResourceGroupName $WorkspaceResourceGroupName -Name $PrivateEndpointName -Location $Location -Subnet $targetSubnet -TargetResourceId $workspaceResource.ResourceId -GroupIds @("global")
+$privateEndpoint = Get-AzPrivateEndpoint -Name $PrivateEndpoint.Name -ResourceGroupName $WorkspaceResourceGroupName
 
 $dnsZone = Get-PrivateDnsZoneResource -ResourceGroupName $PrivateDnsZoneResourceGroupName -ZoneName $PrivateDnsZoneName
 Set-PrivateDnsZoneLink -Zone $dnsZone -LinkName $PrivateDnsZoneVirtualNetworkLinkName -VirtualNetwork $virtualNetwork | Out-Null
-Set-PrivateDnsZoneGroup -PrivateEndpoint $privateEndpoint -Zone $dnsZone -ZoneGroupName $PrivateDnsZoneGroupName -PrivateEndpointResourceGroupName $PrivateEndpointResourceGroupName | Out-Null
+Set-PrivateDnsZoneGroup -PrivateEndpoint $privateEndpoint -Zone $dnsZone -ZoneGroupName $PrivateDnsZoneGroupName -PrivateEndpointResourceGroupName $WorkspaceResourceGroupName | Out-Null
 Update-PrivateDnsRecords -PrivateEndpoint $privateEndpoint -Zone $dnsZone
 
 $workspace = Disable-PublicNetworkAccess -WorkspaceResourceGroup $WorkspaceResourceGroupName -WorkspaceName $WorkspaceName
