@@ -88,7 +88,7 @@ $requiredModules = @(
 # Import required Az modules into the runspace if they are not already loaded.
 foreach ($module in $requiredModules) {
     if (-not (Get-Module -Name $module)) {
-        Write-Verbose ("Importing module {0}" -f $module)
+        Write-Log -Message ("Importing module {0}" -f $module)
         try {
             Import-Module -Name $module -ErrorAction Stop
         }
@@ -101,6 +101,20 @@ foreach ($module in $requiredModules) {
 # Constants for DNS wait behavior.
 $dnsConfigTimeoutSeconds = 90
 $dnsConfigPollSeconds = 5
+
+function Write-Log {
+    param(
+        [ValidateSet('Info', 'Warning')]
+        [string]$Level = 'Info',
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    switch ($Level) {
+        'Info'    { Write-Verbose -Message ("[INFO] {0}" -f $Message) }
+        'Warning' { Write-Warning -Message ("[WARN] {0}" -f $Message) }
+    }
+}
 
 # Helper to produce consistent step/status output for workbook tables.
 function Write-Step {
@@ -382,14 +396,14 @@ function Disable-PublicNetworkAccess {
 
 # Honor PowerShell ShouldProcess to support -WhatIf and -Confirm.
 if ($DryRun -eq $true) {
-    Write-Warning 'DryRun specified (true). No changes will be made; displaying planned operations only.'
+    Write-Log -Level Warning -Message 'DryRun specified (true). No changes will be made; displaying planned operations only.'
 }
 
 if (-not $PSCmdlet.ShouldProcess("Workspace '{0}'" -f $WorkspaceName, "Configure private endpoint connectivity")) {
     return
 }
 
-Write-Verbose "Authenticating to Azure using managed identity if available."
+Write-Log -Message 'Authenticating to Azure using managed identity if available.'
 $null = Connect-AzAccount -Identity -ErrorAction SilentlyContinue
 
 $context = Get-AzContext
@@ -421,7 +435,7 @@ catch {
 }
 
 Set-AzContext -SubscriptionId $context.Subscription.Id | Out-Null
-Write-Verbose ("Using subscription {0} ({1})" -f $context.Subscription.Name, $context.Subscription.Id)
+Write-Log -Message ("Using subscription {0} ({1})" -f $context.Subscription.Name, $context.Subscription.Id)
 
 $workspaceResource = Get-AzResource -ResourceGroupName $WorkspaceResourceGroupName -ResourceType "Microsoft.DesktopVirtualization/workspaces" -Name $WorkspaceName -ErrorAction Stop
 $workspaceCurrent = Get-AzWvdWorkspace -ResourceGroupName $WorkspaceResourceGroupName -Name $WorkspaceName -ErrorAction Stop
@@ -510,7 +524,7 @@ $privateEndpoint = Get-PrivateEndpointWithDnsConfig -ResourceGroupName $Workspac
 $dnsSyncStatus = 'Synced'
 $dnsSyncMessage = 'Private endpoint DNS records updated.'
 if (-not ($privateEndpoint -and $privateEndpoint.CustomDnsConfigs -and $privateEndpoint.CustomDnsConfigs.Count -gt 0)) {
-    Write-Warning "Private endpoint DNS configuration did not populate within $dnsConfigTimeoutSeconds seconds. DNS records will not be synced automatically."
+    Write-Log -Level Warning -Message ("Private endpoint DNS configuration did not populate within {0} seconds. DNS records will not be synced automatically." -f $dnsConfigTimeoutSeconds)
     $dnsSyncStatus = 'Pending'
     $dnsSyncMessage = 'CustomDnsConfigs not available; no DNS records written.'
 }
