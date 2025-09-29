@@ -6,7 +6,6 @@
  The automation runbook resolves the target subscription automatically based on the workspace resource group.
  The workspace private endpoint is deployed into the same resource group as the workspace and targets the feed subresource of privatelink.wvd.microsoft.com.
  Specify -DryRun:$true to preview planned operations without making changes.
- Adjust -DnsRecordWaitSeconds to control how long the script waits for private endpoint DNS data to become available.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -45,10 +44,7 @@ param(
     [bool]$SkipDnsValidation = $false,
 
     [Parameter()]
-    [bool]$DryRun = $false,
-
-    [Parameter()]
-    [ValidateRange(5,600)][int]$DnsRecordWaitSeconds = 90
+    [bool]$DryRun = $false
 )
 
 # Ensure required Az modules are loaded before execution.
@@ -457,7 +453,7 @@ if ($DryRun -eq $true) {
         $plan.Add((Write-Step -Step 'DnsZoneGroup' -Status 'Create' -Message "Would associate private endpoint with DNS zone group '$PrivateDnsZoneGroupName'."))
     }
 
-    $plan.Add((Write-Step -Step 'DnsRecords' -Status 'ManualSync' -Message ("Script will poll up to {0} seconds for private endpoint DNS data before syncing records." -f $DnsRecordWaitSeconds)))
+    $plan.Add((Write-Step -Step 'DnsRecords' -Status 'ManualSync' -Message ("Script will poll up to {0} seconds for private endpoint DNS data before syncing records." -f 90)))
 
     $publicAccessStatus = if ($workspaceCurrent.PublicNetworkAccess -eq 'Disabled') { 'Disabled' } else { 'WillDisable' }
     $publicAccessMessage = if ($publicAccessStatus -eq 'Disabled') {
@@ -498,7 +494,7 @@ $dnsZone = Get-PrivateDnsZoneResource -ResourceGroupName $PrivateDnsZoneResource
 Set-PrivateDnsZoneGroup -PrivateEndpoint $privateEndpoint -Zone $dnsZone -ZoneGroupName $PrivateDnsZoneGroupName -PrivateEndpointResourceGroupName $WorkspaceResourceGroupName | Out-Null
 
 # Refresh the private endpoint until DNS configuration data becomes available so records can be registered manually.
-$waitDeadline = [DateTimeOffset]::UtcNow.AddSeconds($DnsRecordWaitSeconds)
+$waitDeadline = [DateTimeOffset]::UtcNow.AddSeconds(90)
 while ([DateTimeOffset]::UtcNow -lt $waitDeadline) {
     $privateEndpoint = Get-AzPrivateEndpoint -Name $PrivateEndpointName -ResourceGroupName $WorkspaceResourceGroupName
     if ($privateEndpoint.CustomDnsConfigs -and $privateEndpoint.CustomDnsConfigs.Count -gt 0) {
@@ -508,7 +504,7 @@ while ([DateTimeOffset]::UtcNow -lt $waitDeadline) {
 }
 
 if (-not ($privateEndpoint.CustomDnsConfigs -and $privateEndpoint.CustomDnsConfigs.Count -gt 0)) {
-    Write-Warning "Private endpoint DNS configuration did not populate within $DnsRecordWaitSeconds seconds. DNS records will not be synced automatically."
+    Write-Warning "Private endpoint DNS configuration did not populate within 90 seconds. DNS records will not be synced automatically."
 }
 else {
     Update-PrivateDnsRecords -PrivateEndpoint $privateEndpoint -Zone $dnsZone
