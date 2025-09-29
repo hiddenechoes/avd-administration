@@ -4,7 +4,7 @@
 .DESCRIPTION
  Creates or updates the workspace private endpoint, aligns private DNS, disables public access, and validates connectivity for workbook automation runs.
  The automation runbook resolves the target subscription automatically based on the workspace resource group.
- The workspace private endpoint is deployed into the same resource group as the workspace.
+ The workspace private endpoint is deployed into the same resource group as the workspace and targets the feed subresource of privatelink.wvd.microsoft.com.
  Specify -DryRun:$true to preview planned operations without making changes.
  Adjust -DnsRecordWaitSeconds to control how long the script waits for private endpoint DNS data to become available.
 #>
@@ -39,7 +39,7 @@ param(
     [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneName,
 
     [Parameter()]
-    [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneGroupName = "default",
+    [ValidateNotNullOrEmpty()][string]$PrivateDnsZoneGroupName = "avd-zonegroup",
 
     [Parameter()]
     [bool]$SkipDnsValidation = $false,
@@ -122,7 +122,7 @@ function New-WorkspacePrivateEndpoint {
         [ValidateNotNullOrEmpty()][string]$Location,
         [Microsoft.Azure.Commands.Network.Models.PSSubnet]$Subnet,
         [ValidateNotNullOrEmpty()][string]$TargetResourceId,
-        [string[]]$GroupIds = @('global')
+        [string[]]$GroupIds = @('feed')
     )
 
     $existing = Get-AzPrivateEndpoint -Name $Name -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
@@ -131,7 +131,7 @@ function New-WorkspacePrivateEndpoint {
     }
 
     if (-not $GroupIds -or [string]::IsNullOrWhiteSpace($GroupIds[0])) {
-        $GroupIds = @('global')
+        $GroupIds = @('feed')
     }
 
     $connectionParams = @{
@@ -476,14 +476,14 @@ if ($DryRun -eq $true) {
 
 $targetSubnet = Set-PrivateEndpointSubnetPolicy -VirtualNetwork $virtualNetwork -SubnetName $SubnetName -ResourceGroupName $VirtualNetworkResourceGroupName
 
-# Determine the correct private endpoint subresource (group ID) for the workspace resource type.
+# Determine the correct private endpoint subresource (feed) for the workspace resource type.
 $subresourceMap = @{
-    'microsoft.desktopvirtualization/workspaces' = 'global'
+    'microsoft.desktopvirtualization/workspaces' = 'feed'
 }
 $workspaceResourceTypeKey = $workspaceResource.ResourceType.ToLowerInvariant()
 $groupIds = @($subresourceMap[$workspaceResourceTypeKey])
 if (-not $groupIds -or [string]::IsNullOrWhiteSpace($groupIds[0])) {
-    $groupIds = @('global')
+    $groupIds = @('feed')
 }
 
 if ($existingPrivateEndpoint) {
