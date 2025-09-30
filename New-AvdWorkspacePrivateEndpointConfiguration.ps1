@@ -250,7 +250,8 @@ function Set-PrivateDnsZoneGroup {
     }
 
     # Prepare the zone configuration object required by the zone group command.
-    $zoneConfig = New-AzPrivateDnsZoneConfig -Name "default" -PrivateDnsZoneId $zoneId
+    $zoneConfigName = ($Zone.Name -replace '\.', '-')
+    $zoneConfig = New-AzPrivateDnsZoneConfig -Name $zoneConfigName -PrivateDnsZoneId $zoneId
     New-AzPrivateDnsZoneGroup -ResourceGroupName $PrivateEndpointResourceGroupName -PrivateEndpointName $PrivateEndpoint.Name -Name $ZoneGroupName -PrivateDnsZoneConfig $zoneConfig
 }
 
