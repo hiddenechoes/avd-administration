@@ -89,6 +89,20 @@ param(
 # Derive the private endpoint name from the workspace name.
 $PrivateEndpointName = "{0}{1}" -f $PrivateEndpointNamePrefix, $WorkspaceName
 
+function Write-Log {
+    param(
+        [ValidateSet('Info', 'Warning')]
+        [string]$Level = 'Info',
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    switch ($Level) {
+        'Info'    { Write-Verbose -Message ("[INFO] {0}" -f $Message) }
+        'Warning' { Write-Warning -Message ("[WARN] {0}" -f $Message) }
+    }
+}
+
 # Ensure required Az modules are loaded before execution.
 $requiredModules = @(
     'Az.Accounts',
@@ -114,20 +128,6 @@ foreach ($module in $requiredModules) {
 # Constants for DNS wait behavior.
 $dnsConfigTimeoutSeconds = 90
 $dnsConfigPollSeconds = 5
-
-function Write-Log {
-    param(
-        [ValidateSet('Info', 'Warning')]
-        [string]$Level = 'Info',
-        [Parameter(Mandatory = $true)]
-        [string]$Message
-    )
-
-    switch ($Level) {
-        'Info'    { Write-Verbose -Message ("[INFO] {0}" -f $Message) }
-        'Warning' { Write-Warning -Message ("[WARN] {0}" -f $Message) }
-    }
-}
 
 # Helper to produce consistent step/status output for workbook tables.
 function Write-Step {
